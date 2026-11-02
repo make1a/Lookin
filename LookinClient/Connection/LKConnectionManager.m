@@ -491,13 +491,11 @@ static NSIndexSet * PushFrameTypeList() {
         activeRequest.succBlock(attachment);
     }
     
-    static NSUInteger dataSize = 0;
-    static CFTimeInterval startTime = 0;
     if (activeRequest.receivedDataCount == 0) {
-        dataSize = 0;
-        startTime = CACurrentMediaTime();
+        activeRequest.receivedByteCount = 0;
+        activeRequest.firstResponseTime = CACurrentMediaTime();
     }
-    dataSize += data.length;
+    activeRequest.receivedByteCount += data.length;
     
     BOOL hasReceivedAllResponses = NO;
     if (attachment.dataTotalCount > 0) {
@@ -516,12 +514,12 @@ static NSIndexSet * PushFrameTypeList() {
             activeRequest.completionBlock();
         }
         
-        CFTimeInterval timeDuration = CACurrentMediaTime() - startTime;
-        CGFloat totalSize = dataSize / 1024.0 / 1024.0;
-        if (totalSize > 0.5) {
-            NSMutableString *logString = [[NSMutableString alloc] initWithString:@"Lookin - "];
-            [logString appendFormat:@"已收到全部请求 %@ / %@，总耗时:%.2f, 数据总大小:%.2fM", @(activeRequest.receivedDataCount), @(attachment.dataTotalCount), timeDuration, totalSize];
-            NSLog(@"%@", logString);
+        CFTimeInterval timeDuration = CACurrentMediaTime() - activeRequest.firstResponseTime;
+        CGFloat totalSize = activeRequest.receivedByteCount / 1024.0 / 1024.0;
+        if (activeRequest.type == LookinRequestTypeHierarchyDetails) {
+            NSLog(@"TransportMetrics - hierarchy-details responses:%@/%@ duration:%.2fs bytes:%.2fM", @(activeRequest.receivedDataCount), @(attachment.dataTotalCount), timeDuration, totalSize);
+        } else if (totalSize > 0.5) {
+            NSLog(@"Lookin - received request %@ / %@, duration:%.2fs, data size:%.2fM", @(activeRequest.receivedDataCount), @(attachment.dataTotalCount), timeDuration, totalSize);
         }
     } else {
         /// 对于多 response 的请求，每收到一次 response 则重置 timeout 倒计时

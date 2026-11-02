@@ -84,6 +84,9 @@ typedef NS_ENUM(NSInteger, LookinMeasureState) {
 
 @property(nonatomic, strong, readonly) LookinBOOLMsgAttribute *fastMode;
 
+/// 首次同步时优先拉取当前可见图层，之后在后台补齐其余数据。
+@property(nonatomic, assign) BOOL preferFirstScreenSync;
+
 /// 上次接收到 iOS app 里传过来的 color config 和 collapsedClasses 信息的时间，用来统计
 @property(nonatomic, assign) NSTimeInterval receivingConfigTime_Color;
 @property(nonatomic, assign) NSTimeInterval receivingConfigTime_Class;

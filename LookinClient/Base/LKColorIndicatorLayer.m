@@ -61,9 +61,16 @@
     if (!color) {
         return LookinColorMake(191, 191, 191);
     }
+
+    // 从被检查 App 收到的颜色不一定是 HSB 兼容的色彩空间，直接取 HSB
+    // 分量会触发 AppKit 异常。先统一为 sRGB；无法转换则使用中性边框色。
+    NSColor *sRGBColor = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (!sRGBColor) {
+        return LookinColorMake(191, 191, 191);
+    }
     
     CGFloat hue, saturation, brightness, alpha;
-    [color getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha];
+    [sRGBColor getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha];
     
     CGFloat newBrightness = (brightness > .5) ? (brightness - .2) : (brightness + .2);
     CGFloat newAlpha = MIN(1, alpha + .3);

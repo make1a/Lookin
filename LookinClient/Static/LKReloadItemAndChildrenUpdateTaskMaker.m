@@ -14,7 +14,7 @@
 @implementation LKReloadItemAndChildrenUpdateTaskMaker
 
 + (NSArray<LookinStaticAsyncUpdateTask *> *)makeWithItem:(LookinDisplayItem *)item {
-    if (!item || [LKStaticAsyncUpdateManager sharedInstance].isUpdating) {
+    if (!item || ([LKStaticAsyncUpdateManager sharedInstance].isUpdating && ![LKStaticAsyncUpdateManager sharedInstance].isBackgroundUpdating)) {
         NSAssert(NO, @"");
         return nil;
     }

@@ -207,6 +207,8 @@
 "Cancel measure after key up." = "Cancel measure after key up.";
 "Lookin Documentation Collection" = "Lookin Documentation Collection";
 "Fast Mode" = "Fast Mode";
+"Prioritize first screen" = "Prioritize first screen";
+"Show the visible layers first, then continue syncing the remaining layer data in the background." = "Show the visible layers first, then continue syncing the remaining layer data in the background.";
 "Request timeout, layer data transmission failed." = "Request timeout, layer data transmission failed.";
 "Fast refresh mode is enabled, which may result in layer consistency issues." = "Fast refresh mode is enabled, which may result in layer consistency issues.";
 "View feature description" = "View feature description";

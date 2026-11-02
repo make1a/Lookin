@@ -16,6 +16,10 @@
 
 @property(nonatomic, assign) NSUInteger receivedDataCount;
 
+/// 仅用于本地性能日志，不包含任何业务内容。
+@property(nonatomic, assign) NSUInteger receivedByteCount;
+@property(nonatomic, assign) CFTimeInterval firstResponseTime;
+
 @property(nonatomic, copy) void (^succBlock)(id);
 
 @property(nonatomic, copy) void (^completionBlock)(void);

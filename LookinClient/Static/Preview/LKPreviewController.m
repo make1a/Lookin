@@ -657,11 +657,12 @@ extern NSString *const LKAppShowConsoleNotificationName;
         [menu addItem:[NSMenuItem separatorItem]];
         
         if (!self.dataSource.isReadOnly) {
-            BOOL isUpdating = [LKStaticAsyncUpdateManager sharedInstance].isUpdating;
+            LKStaticAsyncUpdateManager *updateManager = [LKStaticAsyncUpdateManager sharedInstance];
+            BOOL isUpdating = updateManager.isUpdating;
             [menu addItem:({
                 NSMenuItem *item = [NSMenuItem new];
                 item.title = NSLocalizedString(@"Reload layer", nil);
-                if (!isUpdating) {
+                if (!isUpdating || updateManager.isBackgroundUpdating) {
                     item.target = self;
                     item.action = @selector(_handleReloadSelfItem:);
                 }
@@ -670,7 +671,7 @@ extern NSString *const LKAppShowConsoleNotificationName;
             [menu addItem:({
                 NSMenuItem *item = [NSMenuItem new];
                 item.title = NSLocalizedString(@"Reload layer and its children", nil);
-                if (!isUpdating) {
+                if (!isUpdating || updateManager.isBackgroundUpdating) {
                     item.target = self;
                     item.action = @selector(_handleReloadSelfAndChildrenItem:);
                 }

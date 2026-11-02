@@ -41,6 +41,8 @@
 @property(nonatomic, strong, readonly) RACSubject *modifyingUpdateErrorSignal;
 
 - (BOOL)isUpdating;
+/// 首屏已可操作，当前仅在后台补齐剩余详情。
+- (BOOL)isBackgroundUpdating;
 
 /// 重新拉取一个 displayItem 的数据（图像+Attr），不包括子图层
 - (void)reloadSingleDisplayItem:(LookinDisplayItem *)item;

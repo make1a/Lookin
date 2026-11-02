@@ -18,7 +18,6 @@
 #import "LKNavigationManager.h"
 #import "LKPerformanceReporter.h"
 #import "LookinDisplayItem+LookinClient.h"
-#import "LKPreferenceManager.h"
 #import "LKVersionComparer.h"
 #import "LKReloadSingleItemUpdateTaskMaker.h"
 #import "LKReloadItemAndChildrenUpdateTaskMaker.h"
@@ -31,10 +30,37 @@
 @property(nonatomic, assign) NSInteger finishedTasksCount;
 @property(nonatomic, assign) NSInteger tasksTotalCount;
 @property(nonatomic, assign) NSInteger failedTasksCount;
+/// 只有收到成功回包的任务才会进入该集合。取消、超时和服务端失败都不会进入。
+@property(nonatomic, strong) NSMutableSet<LookinStaticAsyncUpdateTask *> *succeededTasks;
+/// 同一 oid 可能同时有 group / solo 两个任务，按请求顺序消费，得到精确任务签名。
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray<LookinStaticAsyncUpdateTask *> *> *pendingTasksByOid;
 
 @end
 
+@interface LKProgressiveDetailUpdateSession : NSObject
+
+@property(nonatomic, assign) NSUInteger generation;
+@property(nonatomic, copy) NSArray<LookinStaticAsyncUpdateTask *> *allTasks;
+@property(nonatomic, copy) NSArray<LookinStaticAsyncUpdateTask *> *firstScreenTasks;
+@property(nonatomic, assign) NSUInteger finishedTasksCount;
+@property(nonatomic, strong) NSMutableSet<LookinStaticAsyncUpdateTask *> *succeededTasks;
+@property(nonatomic, assign) CFTimeInterval firstScreenStartTime;
+@property(nonatomic, assign) CFTimeInterval backgroundStartTime;
+
+@end
+
+@implementation LKProgressiveDetailUpdateSession
+@end
+
 @implementation LKDetailUpdateRequest
+
+- (instancetype)init {
+    if (self = [super init]) {
+        _succeededTasks = [NSMutableSet set];
+        _pendingTasksByOid = [NSMutableDictionary dictionary];
+    }
+    return self;
+}
 
 - (BOOL)queryIfContainsTask:(LookinStaticAsyncUpdateTask *)task {
     for (LookinStaticAsyncUpdateTasksPackage *pack in self.packages) {
@@ -57,6 +83,15 @@
     }
 }
 
+- (LookinStaticAsyncUpdateTask *)consumeTaskForDisplayItemOid:(unsigned long)oid {
+    NSMutableArray<LookinStaticAsyncUpdateTask *> *tasks = self.pendingTasksByOid[@(oid)];
+    LookinStaticAsyncUpdateTask *task = tasks.firstObject;
+    if (task) {
+        [tasks removeObjectAtIndex:0];
+    }
+    return task;
+}
+
 - (NSInteger)tasksTotalCount {
     NSInteger count = 0;
     for (LookinStaticAsyncUpdateTasksPackage *pack in self.packages) {
@@ -73,6 +108,9 @@
 @property(nonatomic, strong) NSMutableArray<LKDetailUpdateRequest *> *succeededRequests;
 /// 已经发送出去、尚未结束的 request
 @property(nonatomic, strong) LKDetailUpdateRequest *ongoingRequest;
+/// 当前渐进同步会话。每次重新加载都会创建新代次，旧代次的回调不得继续发送后台任务。
+@property(nonatomic, strong) LKProgressiveDetailUpdateSession *progressiveSession;
+@property(nonatomic, assign) NSUInteger progressiveGeneration;
 
 @end
 
@@ -100,6 +138,7 @@
         @weakify(self);
         [[self dataSource].willReloadHierarchyInfo subscribeNext:^(id  _Nullable x) {
             @strongify(self);
+            [self _invalidateProgressiveSession];
             [self.succeededRequests removeAllObjects];
         }];
     }
@@ -113,22 +152,143 @@
     if (!app || !self.dataSource.flatItems.count) {
         return;
     }
-    [self endUpdating];
+    if (LKPreferenceManager.mainManager.preferFirstScreenSync) {
+        [self _startProgressiveUpdate];
+        return;
+    }
+
+    [self _invalidateProgressiveSession];
+    [self _cancelOngoingRequest];
     
     NSArray<LookinStaticAsyncUpdateTask *> *newTasks = [self makeMaximumTasks];
     if (newTasks.count == 0) {
         return;
     }
-    [self sendTasks:newTasks completion:nil];
+    [self _sendTasks:newTasks completion:nil];
 }
 
 - (void)endUpdating {
+    [self _invalidateProgressiveSession];
+    [self _cancelOngoingRequest];
+}
+
+- (void)_cancelOngoingRequest {
     if (!self.ongoingRequest) {
         return;
     }
     NSLog(@"AsyncUpdate - endUpdating");
     // 这句会触发 sendTasks 方法里的 completed 事件，进而导致 delegate 被通知
     [InspectingApp cancelHierarchyDetailFetching];
+}
+
+- (void)_invalidateProgressiveSession {
+    self.progressiveGeneration += 1;
+    self.progressiveSession = nil;
+}
+
+- (void)_startProgressiveUpdate {
+    [self _startProgressiveUpdateWithSucceededTasks:nil];
+}
+
+- (void)_startProgressiveUpdateWithSucceededTasks:(NSSet<LookinStaticAsyncUpdateTask *> *)succeededTasks {
+    [self _invalidateProgressiveSession];
+    [self _cancelOngoingRequest];
+
+    NSArray<LookinStaticAsyncUpdateTask *> *allTasks = [self makeMaximumTasks];
+    if (allTasks.count == 0) {
+        return;
+    }
+
+    NSSet<NSNumber *> *visibleOids = [NSSet setWithArray:[self.dataSource.displayingFlatItems lookin_map:^id(NSUInteger idx, LookinDisplayItem *item) {
+        return @(item.layerObject.oid);
+    }]];
+    NSArray<LookinStaticAsyncUpdateTask *> *firstScreenTasks = [allTasks lookin_filter:^BOOL(LookinStaticAsyncUpdateTask *task) {
+        return [visibleOids containsObject:@(task.oid)];
+    }];
+    if (firstScreenTasks.count == 0) {
+        firstScreenTasks = allTasks;
+    }
+
+    LKProgressiveDetailUpdateSession *session = [LKProgressiveDetailUpdateSession new];
+    session.generation = self.progressiveGeneration;
+    session.allTasks = allTasks;
+    session.succeededTasks = [NSMutableSet setWithSet:succeededTasks ?: [NSSet set]];
+    firstScreenTasks = [firstScreenTasks lookin_filter:^BOOL(LookinStaticAsyncUpdateTask *task) {
+        return ![session.succeededTasks containsObject:task];
+    }];
+    session.firstScreenTasks = firstScreenTasks;
+    session.firstScreenStartTime = CACurrentMediaTime();
+    self.progressiveSession = session;
+
+    NSLog(@"ProgressiveSync - generation:%@ first-screen tasks:%@ total:%@", @(session.generation), @(firstScreenTasks.count), @(allTasks.count));
+    if (firstScreenTasks.count == 0) {
+        NSArray<LookinStaticAsyncUpdateTask *> *backgroundTasks = [session.allTasks lookin_filter:^BOOL(LookinStaticAsyncUpdateTask *task) {
+            return ![session.succeededTasks containsObject:task];
+        }];
+        if (backgroundTasks.count == 0) {
+            [self _finishProgressiveSession:session];
+            return;
+        }
+        session.backgroundStartTime = CACurrentMediaTime();
+        NSLog(@"ProgressiveSync - generation:%@ resume background tasks:%@", @(session.generation), @(backgroundTasks.count));
+        @weakify(self);
+        [self _sendTasks:backgroundTasks completion:^(LKDetailUpdateRequest *backgroundRequest, BOOL backgroundCompleted) {
+            @strongify(self);
+            if (self.progressiveSession != session || session.generation != self.progressiveGeneration || !backgroundCompleted) {
+                return;
+            }
+            [session.succeededTasks unionSet:backgroundRequest.succeededTasks];
+            session.finishedTasksCount = session.succeededTasks.count;
+            NSLog(@"ProgressiveSync - generation:%@ resume background complete:%.2fs succeeded:%@ failed:%@", @(session.generation), CACurrentMediaTime() - session.backgroundStartTime, @(backgroundRequest.succeededTasks.count), @(backgroundRequest.failedTasksCount));
+            [self _finishProgressiveSession:session];
+        }];
+        return;
+    }
+
+    @weakify(self);
+    [self _sendTasks:firstScreenTasks completion:^(LKDetailUpdateRequest *request, BOOL completed) {
+        @strongify(self);
+        if (self.progressiveSession != session || session.generation != self.progressiveGeneration || !completed) {
+            return;
+        }
+
+        [session.succeededTasks unionSet:request.succeededTasks];
+        session.finishedTasksCount = session.succeededTasks.count;
+        NSLog(@"ProgressiveSync - generation:%@ first-screen complete:%.2fs succeeded:%@ failed:%@", @(session.generation), CACurrentMediaTime() - session.firstScreenStartTime, @(request.succeededTasks.count), @(request.failedTasksCount));
+
+        // 只跳过实际成功的任务；失败任务最多会在后台阶段再尝试一次。
+        NSArray<LookinStaticAsyncUpdateTask *> *backgroundTasks = [session.allTasks lookin_filter:^BOOL(LookinStaticAsyncUpdateTask *task) {
+            return ![session.succeededTasks containsObject:task];
+        }];
+
+        if (backgroundTasks.count == 0) {
+            [self _finishProgressiveSession:session];
+            return;
+        }
+
+        session.backgroundStartTime = CACurrentMediaTime();
+        NSLog(@"ProgressiveSync - generation:%@ background tasks:%@", @(session.generation), @(backgroundTasks.count));
+        [self _sendTasks:backgroundTasks completion:^(LKDetailUpdateRequest *backgroundRequest, BOOL backgroundCompleted) {
+            @strongify(self);
+            if (self.progressiveSession != session || session.generation != self.progressiveGeneration || !backgroundCompleted) {
+                return;
+            }
+            [session.succeededTasks unionSet:backgroundRequest.succeededTasks];
+            session.finishedTasksCount = session.succeededTasks.count;
+            NSLog(@"ProgressiveSync - generation:%@ background complete:%.2fs succeeded:%@ failed:%@", @(session.generation), CACurrentMediaTime() - session.backgroundStartTime, @(backgroundRequest.succeededTasks.count), @(backgroundRequest.failedTasksCount));
+            [self _finishProgressiveSession:session];
+        }];
+    }];
+}
+
+- (void)_finishProgressiveSession:(LKProgressiveDetailUpdateSession *)session {
+    if (self.progressiveSession != session || session.generation != self.progressiveGeneration) {
+        return;
+    }
+    NSLog(@"ProgressiveSync - generation:%@ complete:%.2fs processed tasks:%@", @(session.generation), CACurrentMediaTime() - session.firstScreenStartTime, @(session.finishedTasksCount));
+    self.progressiveSession = nil;
+    [self notifyTasksCountToDelegate];
+    [LKPerformanceReporter.sharedInstance didComplete];
 }
 
 - (NSArray<LookinStaticAsyncUpdateTask *> *)makeMaximumTasks {
@@ -339,16 +499,39 @@
 }
 
 - (void)sendTasks:(NSArray<LookinStaticAsyncUpdateTask *> *)newTasks completion:(void (^)(void))completionBlock {
+    [self _invalidateProgressiveSession];
+    [self _cancelOngoingRequest];
+    [self _sendTasks:newTasks completion:^(LKDetailUpdateRequest *request, BOOL completed) {
+        if (completionBlock && completed) {
+            completionBlock();
+        }
+    }];
+}
+
+- (void)_sendTasks:(NSArray<LookinStaticAsyncUpdateTask *> *)newTasks completion:(void (^)(LKDetailUpdateRequest *request, BOOL completed))completionBlock {
     LKInspectableApp *app = [LKAppsManager sharedInstance].inspectingApp;
     if (!app || newTasks.count == 0) {
+        if (completionBlock) {
+            completionBlock(nil, NO);
+        }
         return;
     }
-    // 相同请求不能并发，因此必须先把之前的请求先取消掉
-    [self endUpdating];
+    // 同类请求不能并发。渐进同步的后续阶段会直接调用本方法，避免取消当前会话。
+    [self _cancelOngoingRequest];
     
     NSArray<LookinStaticAsyncUpdateTasksPackage *> *packages = [self _makePackagesFromTasks:newTasks];
-    self.ongoingRequest = [LKDetailUpdateRequest new];
-    self.ongoingRequest.packages = packages;
+    LKDetailUpdateRequest *request = [LKDetailUpdateRequest new];
+    request.packages = packages;
+    [newTasks enumerateObjectsUsingBlock:^(LookinStaticAsyncUpdateTask * _Nonnull task, NSUInteger idx, BOOL * _Nonnull stop) {
+        NSNumber *key = @(task.oid);
+        NSMutableArray<LookinStaticAsyncUpdateTask *> *tasks = request.pendingTasksByOid[key];
+        if (!tasks) {
+            tasks = [NSMutableArray array];
+            request.pendingTasksByOid[key] = tasks;
+        }
+        [tasks addObject:task];
+    }];
+    self.ongoingRequest = request;
     
     [self notifyTasksCountToDelegate];
     
@@ -357,19 +540,30 @@
     @weakify(self);
     [[app fetchHierarchyDetailWithTaskPackages:packages] subscribeNext:^(NSArray<LookinDisplayItemDetail *> *details) {
         @strongify(self);
+        if (self.ongoingRequest != request) {
+            return;
+        }
         [details enumerateObjectsUsingBlock:^(LookinDisplayItemDetail * _Nonnull detail, NSUInteger idx, BOOL * _Nonnull stop) {
+            LookinStaticAsyncUpdateTask *task = [request consumeTaskForDisplayItemOid:detail.displayItemOid];
             if (detail.failureCode == -1) {
-                self.ongoingRequest.failedTasksCount += 1;
+                request.failedTasksCount += 1;
             } else {
+                if (task) {
+                    [request.succeededTasks addObject:task];
+                }
                 [[LKStaticHierarchyDataSource sharedInstance] modifyWithDisplayItemDetail:detail];
             }
         }];
-        self.ongoingRequest.finishedTasksCount += details.count;
+        request.finishedTasksCount += details.count;
         [self notifyTasksCountToDelegate];
         
     } error:^(NSError * _Nullable error) {
         @strongify(self);
+        if (self.ongoingRequest != request) {
+            return;
+        }
         self.ongoingRequest = nil;
+        [self _invalidateProgressiveSession];
         [self notifyTasksCountToDelegate];
         
         NSString *msgTitle = [NSString stringWithFormat:NSLocalizedString(@"Request timeout, layer data transmission failed.", nil)];
@@ -379,54 +573,71 @@
             // 此时可能 StaticViewController 还没来得及被初始化导致错误 tips 显示不出来，所以稍等一下
             [self.delegate detailUpdateReceivedError:error];
         }];
+        if (completionBlock) {
+            completionBlock(request, NO);
+        }
     } completed:^{
         // 注意，用户手动取消请求后，也会走到这里
         @strongify(self);
-        if (self.ongoingRequest) {
-            BOOL userCancel = (self.ongoingRequest.tasksTotalCount > self.ongoingRequest.finishedTasksCount);
+        BOOL userCancel = YES;
+        if (self.ongoingRequest == request) {
+            userCancel = (request.tasksTotalCount > request.finishedTasksCount);
             if (!userCancel) {
-                [self.succeededRequests addObject:self.ongoingRequest];
+                [self.succeededRequests addObject:request];
+                if (self.progressiveSession) {
+                    [self.progressiveSession.succeededTasks unionSet:request.succeededTasks];
+                    self.progressiveSession.finishedTasksCount = self.progressiveSession.succeededTasks.count;
+                }
             }
             
-            if (self.ongoingRequest.failedTasksCount > 0) {
+            if (request.failedTasksCount > 0) {
                 NSError *error = LookinErrorMake(NSLocalizedString(@"Some layer data failed to transmit.", nil), NSLocalizedString(@"It may be due to changes in the layer structure within the iOS app. You can try reloading the entire structure in Lookin.", nil));
                 [self.delegate detailUpdateReceivedError:error];
             }
             
             self.ongoingRequest = nil;
-        } else {
-            NSAssert(NO, @"");
         }
         [self notifyTasksCountToDelegate];
-        [LKPerformanceReporter.sharedInstance didComplete];
+        if (!userCancel && !self.progressiveSession) {
+            [LKPerformanceReporter.sharedInstance didComplete];
+        }
         
         if (completionBlock) {
-            completionBlock();
+            completionBlock(request, !userCancel);
         }
     }];
 }
 
 - (void)notifyTasksCountToDelegate {
-    NSUInteger totalCount = 0;
-
-    for (LookinStaticAsyncUpdateTasksPackage *pack in self.ongoingRequest.packages) {
-        totalCount += pack.tasks.count;
+    NSUInteger totalCount;
+    NSUInteger finishedCount;
+    if (self.progressiveSession) {
+        totalCount = self.progressiveSession.allTasks.count;
+        finishedCount = self.progressiveSession.succeededTasks.count + self.ongoingRequest.succeededTasks.count;
+    } else {
+        totalCount = self.ongoingRequest.tasksTotalCount;
+        finishedCount = self.ongoingRequest.finishedTasksCount;
     }
-    NSUInteger finishedCount = self.ongoingRequest.finishedTasksCount;
 
     NSLog(@"AsyncUpdate - notify delagate: %@/%@", @(finishedCount), @(totalCount));
     [self.delegate detailUpdateTasksTotalCount:totalCount finishedCount:finishedCount];
 }
 
 - (void)reloadSingleDisplayItem:(LookinDisplayItem *)item {
+    NSSet<LookinStaticAsyncUpdateTask *> *succeededTasks = self.isBackgroundUpdating ? self.progressiveSession.succeededTasks.copy : nil;
     NSArray *tasks = [LKReloadSingleItemUpdateTaskMaker makeWithItem:item];
     if (tasks.count == 0) {
         return;
     }
-    [self sendTasks:tasks completion:nil];
+    [self sendTasks:tasks completion:^{
+        if (succeededTasks) {
+            [self _startProgressiveUpdateWithSucceededTasks:succeededTasks];
+        }
+    }];
 }
 
 - (void)reloadDisplayItemAndChildren:(LookinDisplayItem *)rootItem {
+    NSSet<LookinStaticAsyncUpdateTask *> *succeededTasks = self.isBackgroundUpdating ? self.progressiveSession.succeededTasks.copy : nil;
     // 先更新 rootItem 的 basis + attr + subitems
     NSArray *tasks = [LKReloadItemAndChildrenUpdateTaskMaker makeWithItem:rootItem];
     if (tasks.count == 0) {
@@ -444,11 +655,15 @@
     
     [self sendTasks:tasks completion:^{
         // 更新 rootItem 以及 children 的图层详情
-        [self updateAfterReloadingItemAndChildren:rootItem];
+        [self updateAfterReloadingItemAndChildren:rootItem completion:^{
+            if (succeededTasks) {
+                [self _startProgressiveUpdateWithSucceededTasks:succeededTasks];
+            }
+        }];
     }];
 }
 
-- (void)updateAfterReloadingItemAndChildren:(LookinDisplayItem *)rootItem {
+- (void)updateAfterReloadingItemAndChildren:(LookinDisplayItem *)rootItem completion:(void (^)(void))completionBlock {
     // 拉取 rootItem 以及 children 的 screenshots + attr
     if (LKPreferenceManager.mainManager.fastMode.currentBOOLValue) {
         [self updateForDisplayingItems];
@@ -467,12 +682,16 @@
                 [tasks addObject:[self _taskFromDisplayItem:item type:LookinStaticAsyncUpdateTaskTypeNoScreenshot]];
             }
         }];
-        [self sendTasks:tasks completion:nil];
+        [self sendTasks:tasks completion:completionBlock];
     }
 }
 
 - (BOOL)isUpdating {
     return self.ongoingRequest != nil;
+}
+
+- (BOOL)isBackgroundUpdating {
+    return self.progressiveSession != nil && self.progressiveSession.backgroundStartTime > 0;
 }
 
 @end

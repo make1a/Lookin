@@ -18,7 +18,7 @@ typedef NS_ENUM(NSInteger, LKConsoleDataSourceRowItemType) {
 
 @property(nonatomic, assign) LKConsoleDataSourceRowItemType type;
 
-/// 仅 type 为 LKConsoleDataSourceRowItemTypeReturn 时，该属性有效
+/// 仅当 type 为 LKConsoleDataSourceRowItemTypeReturn 时，此属性有效。
 @property(nonatomic, copy) NSString *highlightText;
 
 @property(nonatomic, copy) NSString *normalText;

@@ -37,6 +37,7 @@ static NSString * const Key_CallStackType = @"callStackType";
 static NSString * const Key_SyncConsoleTarget = @"syncConsoleTarget";
 static NSString * const Key_FreeRotation = @"FreeRotation";
 static NSString * const Key_FastMode = @"fastMode";
+static NSString * const Key_PreferFirstScreenSync = @"preferFirstScreenSync";
 static NSString * const Key_EnableMCPServer = @"enableMCPServer";
 static NSString * const Key_ReceivingConfigTime_Color = @"ConfigTime_Color";
 static NSString * const Key_ReceivingConfigTime_Class = @"ConfigTime_Class";
@@ -180,6 +181,15 @@ static NSString * const Key_ReceivingConfigTime_Class = @"ConfigTime_Class";
             [userDefaults setObject:@(_fastMode.currentBOOLValue) forKey:Key_FastMode];
         }
         [self.fastMode subscribe:self action:@selector(_handleFastModeDidChange:) relatedObject:nil];
+
+        NSNumber *obj_preferFirstScreenSync = [userDefaults objectForKey:Key_PreferFirstScreenSync];
+        if (obj_preferFirstScreenSync != nil) {
+            _preferFirstScreenSync = obj_preferFirstScreenSync.boolValue;
+        } else {
+            // 旧版本已经写入快速模式偏好，说明这是升级用户，保持原来的全量同步行为。
+            _preferFirstScreenSync = (obj_fastMode == nil);
+            [userDefaults setObject:@(_preferFirstScreenSync) forKey:Key_PreferFirstScreenSync];
+        }
         
         NSNumber *obj_enableMCPServer = [userDefaults objectForKey:Key_EnableMCPServer];
         if (obj_enableMCPServer != nil) {
@@ -329,6 +339,16 @@ static NSString * const Key_ReceivingConfigTime_Class = @"ConfigTime_Class";
     _syncConsoleTarget = syncConsoleTarget;
     if (self.shouldStoreToLocal) {
         [[NSUserDefaults standardUserDefaults] setObject:@(syncConsoleTarget) forKey:Key_SyncConsoleTarget];
+    }
+}
+
+- (void)setPreferFirstScreenSync:(BOOL)preferFirstScreenSync {
+    if (_preferFirstScreenSync == preferFirstScreenSync) {
+        return;
+    }
+    _preferFirstScreenSync = preferFirstScreenSync;
+    if (self.shouldStoreToLocal) {
+        [[NSUserDefaults standardUserDefaults] setObject:@(preferFirstScreenSync) forKey:Key_PreferFirstScreenSync];
     }
 }
 

@@ -82,7 +82,7 @@
             @strongify(self);
             [@[LKToolBarIdentifier_App, LKToolBarIdentifier_Console, LKToolBarIdentifier_FastMode] enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
                 NSToolbarItem *item = self.toolbarItemsMap[obj];
-                if (self.isFetchingHierarchy || self.isFetchingDetails) {
+                if (self.isFetchingHierarchy || (self.isFetchingDetails && !updateManager.isBackgroundUpdating)) {
                     item.enabled = NO;
                 } else {
                     item.enabled = YES;
@@ -216,9 +216,14 @@
 
 - (void)_handleReload {
     if (self.isFetchingDetails) {
+        if ([LKStaticAsyncUpdateManager sharedInstance].isBackgroundUpdating) {
+            // 首屏已可用，点击刷新应以用户操作为准，而不是只停止后台补齐。
+            [[LKStaticAsyncUpdateManager sharedInstance] endUpdating];
+        } else {
         // 停止拉取
-        [[LKStaticAsyncUpdateManager sharedInstance] endUpdating];
-        return;
+            [[LKStaticAsyncUpdateManager sharedInstance] endUpdating];
+            return;
+        }
     }
     
     LKInspectableApp *app = [LKAppsManager sharedInstance].inspectingApp;
@@ -370,7 +375,7 @@
     if (self.isFetchingHierarchy) {
         return;
     }
-    if (self.isFetchingDetails) {
+    if (self.isFetchingDetails && ![LKStaticAsyncUpdateManager sharedInstance].isBackgroundUpdating) {
         NSError *error = LookinErrorMake(NSLocalizedString(@"Cannot reload at this time", NIL), NSLocalizedString(@"Please wait until current sync is completed. You can get sync progress in the upper-left corner of this window.", nil));
         [[NSAlert alertWithError:error] beginSheetModalForWindow:self.window completionHandler:nil];
         return;
@@ -500,6 +505,7 @@
     NSButton *reloadButton = (NSButton *)reloadItem.view;
     
     BOOL isFetching = (totalCount > finishedCount);
+    LKStaticAsyncUpdateManager *updateManager = [LKStaticAsyncUpdateManager sharedInstance];
     
     if (isFetching) {
         if (self.isFetchingDetails) {
@@ -526,6 +532,14 @@
         } else {
             // 继续维持“非 fetch”状态
         }
+    }
+
+    if (updateManager.isBackgroundUpdating) {
+        // 后台补齐不再阻塞 App、控制台和模式切换；用户操作会取消旧代次后优先执行。
+        [@[LKToolBarIdentifier_App, LKToolBarIdentifier_Console, LKToolBarIdentifier_FastMode] enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+            NSToolbarItem *item = self.toolbarItemsMap[obj];
+            item.enabled = !self.isFetchingHierarchy;
+        }];
     }
 }
 

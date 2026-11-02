@@ -20,6 +20,7 @@
 @property(nonatomic, strong) LKPreferencePopupView *view_colorFormat;
 @property(nonatomic, strong) LKPreferenceSwitchView *view_enableLog;
 @property(nonatomic, strong) LKPreferenceSwitchView *view_enableMCPServer;
+@property(nonatomic, strong) LKPreferenceSwitchView *view_preferFirstScreenSync;
 @property(nonatomic, strong) LKPreferencePopupView *view_contrast;
 
 @property(nonatomic, strong) NSView *mcpAddressContainer;
@@ -81,6 +82,12 @@
         [LKPreferenceManager mainManager].enableMCPServer = isChecked;
     };
     [self.view addSubview:self.view_enableMCPServer];
+
+    self.view_preferFirstScreenSync = [[LKPreferenceSwitchView alloc] initWithTitle:NSLocalizedString(@"Prioritize first screen", nil) message:NSLocalizedString(@"Show the visible layers first, then continue syncing the remaining layer data in the background.", nil)];
+    self.view_preferFirstScreenSync.didChange = ^(BOOL isChecked) {
+        [LKPreferenceManager mainManager].preferFirstScreenSync = isChecked;
+    };
+    [self.view addSubview:self.view_preferFirstScreenSync];
     
     // MCP 地址容器
     self.mcpAddressContainer = [[NSView alloc] init];
@@ -125,6 +132,7 @@
     self.view_doubleClick.selectedIndex = manager.doubleClickBehavior;
     self.view_enableLog.isChecked = manager.enableReport;
     self.view_enableMCPServer.isChecked = manager.enableMCPServer;
+    self.view_preferFirstScreenSync.isChecked = manager.preferFirstScreenSync;
 }
 
 - (void)viewDidLayout {
@@ -150,6 +158,11 @@
         $(view).x(115).toRight(insets.right).y(y).heightToFit;
         y = view.$maxY + 5;
     }];
+
+    [$(self.view_preferFirstScreenSync).array enumerateObjectsUsingBlock:^(NSView * _Nonnull view, NSUInteger idx, BOOL * _Nonnull stop) {
+        $(view).x(115).toRight(insets.right).y(y).heightToFit;
+        y = view.$maxY + 5;
+    }];
     
     // MCP 地址容器布局
     $(self.mcpAddressContainer).x(115).toRight(insets.right).y(y).height(50);
@@ -170,6 +183,7 @@
     manager.rgbaFormat = YES;
     manager.doubleClickBehavior = LookinDoubleClickBehaviorCollapse;
     manager.imageContrastLevel = 0;
+    manager.preferFirstScreenSync = YES;
     [self renderFromPreferenceManager];
     
 #if DEBUG
